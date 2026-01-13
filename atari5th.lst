@@ -1,0 +1,1510 @@
+     1                                  ; sets the program's load address to 0x0100 (standard for com files in dos)
+     2                                  org 0x0100
+     3                                  
+     4                                  ; jumps to the 'start' label to begin execution
+     5 00000000 E92605                  jmp start
+     6                                  
+     7                                  ; double word (32-bit) variable to store the original address of the keyboard interrupt service routine (isr)
+     8 00000003 00000000                oldisr: dd 0
+     9                                  
+    10                                  ; solid block character (█) or your paddle char
+    11 00000007 DB                      paddle_char db 0DBh
+    12                                  
+    13                                  ; variables
+    14                                  ; word (16-bit) variable to store the current video memory offset of the ball
+    15 00000008 0000                    ball_loc: dw 0
+    16                                  
+    17                                  ; flag (1=yes, 0=no) to indicate the ball should change direction when moving down (e.g., hit a wall)
+    18 0000000A 0000                    change_down_direction: dw 0
+    19                                  
+    20                                  ; flag (1=yes, 0=no) to indicate the ball should change direction when moving up (e.g., hit a wall)
+    21 0000000C 0000                    change_up_direction: dw 0
+    22                                  
+    23                                  ; flag (1=yes, 0=no) set by keyboard isr to initiate paddle movement left
+    24 0000000E 0000                    left: dw 0
+    25                                  
+    26                                  ; flag (1=yes, 0=no) set by keyboard isr to initiate paddle movement right
+    27 00000010 0000                    right: dw 0
+    28                                  
+    29                                  ; flag (1=yes, 0=no) set by check_player_hit to indicate if the ball hit the paddle
+    30 00000012 0000                    check_hit: dw 0
+    31                                  
+    32                                  ; flag (1=yes, 0=no) to indicate if the ball should move straight down after a top bounce
+    33 00000014 0000                    straight_down: dw 0
+    34                                  
+    35                                  ; score variable
+    36 00000016 0000                    score: dw 0
+    37                                  
+    38                                  ; lives variable
+    39 00000018 0300                    lives: dw 3
+    40                                  
+    41                                  ; score display string
+    42 0000001A 53636F72653A2024        score_msg: db 'Score: $'
+    43                                  
+    44                                  ; game over message string
+    45 00000022 47414D45204F564552-     game_over_msg: db 'GAME OVER - Press any key$'
+    45 0000002B 202D20507265737320-
+    45 00000034 616E79206B657924   
+    46                                  
+    47                                  ; -------------------------------
+    48                                  ; new: display score on screen
+    49                                  ; shows score at top right of screen (row 0, starting at column 73)
+    50                                  ; -------------------------------
+    51                                  display_score:
+    52                                      ; push all general-purpose registers onto the stack
+    53 0000003C 60                          pusha
+    54                                      ; push extra segment register
+    55 0000003D 06                          push es
+    56                                      
+    57                                      ; load video memory segment
+    58 0000003E B800B8                      mov ax, 0xb800
+    59                                      ; set es to video memory
+    60 00000041 8EC0                        mov es, ax
+    61                                      
+    62                                      ; position: row 0, column 73 (offset = 0*160 + 73*2 = 146)
+    63                                      ; this leaves room for up to 7 digits
+    64                                      ; set di to display position
+    65 00000043 BF9C00                      mov di, 156
+    66                                      
+    67                                      ; convert score to decimal and display
+    68                                      ; load score into ax
+    69 00000046 A1[1600]                    mov ax, [score]
+    70                                      ; initialize digit counter
+    71 00000049 B90000                      mov cx, 0
+    72                                      ; divisor for decimal conversion
+    73 0000004C BB0A00                      mov bx, 10
+    74                                      
+    75                                      ; handle zero case
+    76                                      ; check if score is zero
+    77 0000004F 83F800                      cmp ax, 0
+    78                                      ; if not zero, start division loop
+    79 00000052 750B                        jne .disp_score_divide_loop
+    80                                      ; display '0' character
+    81 00000054 26C60530                    mov byte [es:di], '0'
+    82                                      ; set attribute to white on black
+    83 00000058 26C645010F                  mov byte [es:di+1], 0x0F
+    84                                      ; skip to done
+    85 0000005D EB24                        jmp .disp_score_done
+    86                                      
+    87                                  .disp_score_divide_loop:
+    88                                      ; divide by 10 to get digits
+    89                                      ; check if number is fully processed
+    90 0000005F 83F800                      cmp ax, 0
+    91                                      ; if zero, print the digits
+    92 00000062 7408                        je .disp_score_print_digits
+    93                                      ; clear dx for division
+    94 00000064 31D2                        xor dx, dx
+    95                                      ; divide ax by 10
+    96 00000066 F7F3                        div bx
+    97                                      ; save remainder (digit) on stack
+    98 00000068 52                          push dx
+    99                                      ; count digits
+   100 00000069 41                          inc cx
+   101                                      ; continue dividing
+   102 0000006A EBF3                        jmp .disp_score_divide_loop
+   103                                      
+   104                                  .disp_score_print_digits:
+   105                                      ; check if all digits printed
+   106 0000006C 83F900                      cmp cx, 0
+   107                                      ; if done, exit
+   108 0000006F 7412                        je .disp_score_done
+   109                                      ; retrieve digit from stack
+   110 00000071 5A                          pop dx
+   111                                      ; convert digit to ascii
+   112 00000072 80C230                      add dl, '0'
+   113                                      ; write character to video memory
+   114 00000075 268815                      mov [es:di], dl
+   115                                      ; set attribute to white on black
+   116 00000078 26C645010F                  mov byte [es:di+1], 0x0F
+   117                                      ; move to next character position
+   118 0000007D 83C702                      add di, 2
+   119                                      ; decrement digit counter
+   120 00000080 49                          dec cx
+   121                                      ; continue printing digits
+   122 00000081 EBE9                        jmp .disp_score_print_digits
+   123                                      
+   124                                  .disp_score_done:
+   125                                      ; restore extra segment
+   126 00000083 07                          pop es
+   127                                      ; restore all general-purpose registers
+   128 00000084 61                          popa
+   129                                      ; return from procedure
+   130 00000085 C3                          ret
+   131                                  
+   132                                  ; -------------------------------
+   133                                  ; new: display lives on screen
+   134                                  ; shows lives at top right (row 1, column 73) in green
+   135                                  ; -------------------------------
+   136                                  display_lives:
+   137                                      ; push all general-purpose registers onto the stack
+   138 00000086 60                          pusha
+   139                                      ; push extra segment register
+   140 00000087 06                          push es
+   141                                      
+   142                                      ; load video memory segment
+   143 00000088 B800B8                      mov ax, 0xb800
+   144                                      ; set es to video memory
+   145 0000008B 8EC0                        mov es, ax
+   146                                      
+   147                                      ; position: row 1, column 73 (offset = 1*160 + 73*2 = 306)
+   148                                      ; set di to display position
+   149 0000008D BF3C01                      mov di, 316
+   150                                      
+   151                                      ; get lives value
+   152                                      ; load lives into ax
+   153 00000090 A1[1800]                    mov ax, [lives]
+   154                                      ; convert to ascii (single digit 0-3)
+   155 00000093 0430                        add al, '0'
+   156                                      
+   157                                      ; display with green color (0x0a)
+   158                                      ; write character to video memory
+   159 00000095 268805                      mov [es:di], al
+   160                                      ; set attribute to green on black
+   161 00000098 26C645010A                  mov byte [es:di+1], 0x0A
+   162                                      
+   163                                      ; restore extra segment
+   164 0000009D 07                          pop es
+   165                                      ; restore all general-purpose registers
+   166 0000009E 61                          popa
+   167                                      ; return from procedure
+   168 0000009F C3                          ret
+   169                                  
+   170                                  ; -------------------------------
+   171                                  ; new: decrement lives and check for game over
+   172                                  ; returns: zf set if game over (lives = 0)
+   173                                  ; -------------------------------
+   174                                  decrement_lives:
+   175                                      ; push all general-purpose registers onto the stack
+   176 000000A0 60                          pusha
+   177                                      
+   178                                      ; decrease lives
+   179                                      ; decrement lives counter
+   180 000000A1 FF0E[1800]                  dec word [lives]
+   181                                      
+   182                                      ; update display
+   183                                      ; call display routine
+   184 000000A5 E8DEFF                      call display_lives
+   185                                      
+   186                                      ; check if game over
+   187                                      ; compare lives with zero
+   188 000000A8 833E[1800]00                cmp word [lives], 0
+   189                                      
+   190                                      ; restore all general-purpose registers
+   191 000000AD 61                          popa
+   192                                      ; return from procedure (zf set if lives=0)
+   193 000000AE C3                          ret
+   194                                  
+   195                                  ; -------------------------------
+   196                                  ; new: game over screen
+   197                                  ; -------------------------------
+   198                                  game_over:
+   199                                      ; push all general-purpose registers onto the stack
+   200 000000AF 60                          pusha
+   201                                      ; push extra segment register
+   202 000000B0 06                          push es
+   203                                      
+   204                                      ; load video memory segment
+   205 000000B1 B800B8                      mov ax, 0xb800
+   206                                      ; set es to video memory
+   207 000000B4 8EC0                        mov es, ax
+   208                                      
+   209                                      ; clear screen area for message (center of screen)
+   210                                      ; row 12, column 30 (offset = 12*160 + 30*2 = 1980)
+   211                                      ; set di to message position
+   212 000000B6 BFBC07                      mov di, 1980
+   213                                      
+   214                                      ; display "game over" message
+   215                                      ; load message address
+   216 000000B9 BE[2200]                    mov si, game_over_msg
+   217                                      ; light red on black attribute
+   218 000000BC B40C                        mov ah, 0x0C
+   219                                      
+   220                                  .gameover_print:
+   221                                      ; load character from message
+   222 000000BE AC                          lodsb
+   223                                      ; check for end of string
+   224 000000BF 3C24                        cmp al, '$'
+   225                                      ; if end, finish printing
+   226 000000C1 740C                        je .gameover_done
+   227                                      ; write character to video memory
+   228 000000C3 268805                      mov [es:di], al
+   229                                      ; write attribute to video memory
+   230 000000C6 26886501                    mov [es:di+1], ah
+   231                                      ; move to next character position
+   232 000000CA 83C702                      add di, 2
+   233                                      ; continue printing
+   234 000000CD EBEF                        jmp .gameover_print
+   235                                      
+   236                                  .gameover_done:
+   237                                      ; restore extra segment
+   238 000000CF 07                          pop es
+   239                                      ; restore all general-purpose registers
+   240 000000D0 61                          popa
+   241                                      
+   242                                      ; wait for keypress
+   243                                      ; bios keyboard input function
+   244 000000D1 B400                        mov ah, 0
+   245                                      ; call bios keyboard interrupt
+   246 000000D3 CD16                        int 0x16
+   247                                      
+   248                                      ; exit program
+   249                                      ; dos terminate program function
+   250 000000D5 B8004C                      mov ax, 0x4c00
+   251                                      ; call dos interrupt
+   252 000000D8 CD21                        int 0x21
+   253                                  
+   254                                  ; -------------------------------
+   255                                  ; new: increment score and update display
+   256                                  ; call this when a brick is destroyed
+   257                                  ; -------------------------------
+   258                                  increment_score:
+   259                                      ; push all general-purpose registers onto the stack
+   260 000000DA 60                          pusha
+   261                                      
+   262                                      ; add 10 points for each brick
+   263                                      ; add 10 to score
+   264 000000DB 8306[1600]0A                add word [score], 10
+   265                                      
+   266                                      ; update display
+   267                                      ; call display routine
+   268 000000E0 E859FF                      call display_score
+   269                                      
+   270                                      ; restore all general-purpose registers
+   271 000000E3 61                          popa
+   272                                      ; return from procedure
+   273 000000E4 C3                          ret
+   274                                  
+   275                                  ; -------------------------------
+   276                                  ; new: check if position contains a brick character
+   277                                  ; input: di = video memory offset to check
+   278                                  ; returns: zf set if brick found, zf clear if no brick
+   279                                  ; -------------------------------
+   280                                  is_brick:
+   281                                      ; save current base pointer
+   282 000000E5 55                          push bp
+   283                                      ; set bp to sp (establish stack frame)
+   284 000000E6 89E5                        mov bp, sp
+   285                                      ; save ax register
+   286 000000E8 50                          push ax
+   287                                      ; save di register
+   288 000000E9 57                          push di
+   289                                      
+   290                                      ; get position to check
+   291                                      ; load position from stack
+   292 000000EA 8B7E04                      mov di, [bp+4]
+   293                                      ; get character at position
+   294 000000ED 268A05                      mov al, [es:di]
+   295                                      
+   296                                      ; compare with brick character (219 = solid block)
+   297                                      ; compare with brick ascii code
+   298 000000F0 3CDB                        cmp al, 219
+   299                                      
+   300                                      ; restore di register
+   301 000000F2 5F                          pop di
+   302                                      ; restore ax register
+   303 000000F3 58                          pop ax
+   304                                      ; restore base pointer
+   305 000000F4 5D                          pop bp
+   306                                      ; return and discard 2 bytes from stack
+   307 000000F5 C20200                      ret 2
+   308                                  
+   309                                  ; -------------------------------
+   310                                  ; new: erase entire brick starting from hit position
+   311                                  ; input: di = video memory offset where brick was hit
+   312                                  ; erases left until space, then erases right until space
+   313                                  ; also increments score
+   314                                  ; -------------------------------
+   315                                  erase_brick:
+   316                                      ; save current base pointer
+   317 000000F8 55                          push bp
+   318                                      ; set bp to sp (establish stack frame)
+   319 000000F9 89E5                        mov bp, sp
+   320                                      ; push all general-purpose registers onto the stack
+   321 000000FB 60                          pusha
+   322                                      
+   323                                      ; get hit position
+   324                                      ; load hit position from stack
+   325 000000FC 8B7E04                      mov di, [bp+4]
+   326                                      ; save starting position
+   327 000000FF 89FE                        mov si, di
+   328                                      
+   329                                      ; first, erase left from hit position until we find a space
+   330                                  .erase_brick_left_loop:
+   331                                      ; get character at current position
+   332 00000101 268A05                      mov al, [es:di]
+   333                                      ; is it a brick character?
+   334 00000104 3CDB                        cmp al, 219
+   335                                      ; if not brick, start erasing right
+   336 00000106 751A                        jne .erase_brick_start_right
+   337                                      
+   338                                      ; erase this brick character
+   339                                      ; write space character
+   340 00000108 26C60520                    mov byte [es:di], ' '
+   341                                      ; write black attribute
+   342 0000010C 26C6450100                  mov byte [es:di+1], 0x00
+   343                                      
+   344                                      ; move left (2 bytes per character)
+   345                                      ; move to previous character
+   346 00000111 83EF02                      sub di, 2
+   347                                      
+   348                                      ; check if we're at the beginning of a row (prevent wrap-around)
+   349                                      ; copy di to ax
+   350 00000114 89F8                        mov ax, di
+   351                                      ; row width in bytes
+   352 00000116 BBA000                      mov bx, 160
+   353                                      ; clear dx for division
+   354 00000119 31D2                        xor dx, dx
+   355                                      ; divide by row width
+   356 0000011B F7F3                        div bx
+   357                                      ; dx = offset within row, check if at row start
+   358 0000011D 83FA00                      cmp dx, 0
+   359                                      ; continue if not at row start
+   360 00000120 7DDF                        jge .erase_brick_left_loop
+   361                                      
+   362                                  .erase_brick_start_right:
+   363                                      ; now erase right from hit position
+   364                                      ; restore starting position
+   365 00000122 89F7                        mov di, si
+   366                                      ; move to next character (we already erased the hit pos)
+   367 00000124 83C702                      add di, 2
+   368                                      
+   369                                  .erase_brick_right_loop:
+   370                                      ; get character at current position
+   371 00000127 268A05                      mov al, [es:di]
+   372                                      ; is it a brick character?
+   373 0000012A 3CDB                        cmp al, 219
+   374                                      ; if not brick, update score and done
+   375 0000012C 751B                        jne .erase_brick_score_update
+   376                                      
+   377                                      ; erase this brick character
+   378                                      ; write space character
+   379 0000012E 26C60520                    mov byte [es:di], ' '
+   380                                      ; write black attribute
+   381 00000132 26C6450100                  mov byte [es:di+1], 0x00
+   382                                      
+   383                                      ; move right (2 bytes per character)
+   384                                      ; move to next character
+   385 00000137 83C702                      add di, 2
+   386                                      
+   387                                      ; copy di to ax
+   388 0000013A 89F8                        mov ax, di
+   389                                      ; row width in bytes
+   390 0000013C BBA000                      mov bx, 160
+   391                                      ; clear dx for division
+   392 0000013F 31D2                        xor dx, dx
+   393                                      ; divide by row width
+   394 00000141 F7F3                        div bx
+   395                                      ; dx = offset within row, last character position in row
+   396 00000143 81FA9E00                    cmp dx, 158
+   397                                      ; continue if not at row end
+   398 00000147 7EDE                        jle .erase_brick_right_loop
+   399                                      
+   400                                  .erase_brick_score_update:
+   401                                      ; brick destroyed, increment score
+   402                                      ; restore all general-purpose registers
+   403 00000149 61                          popa
+   404                                      ; restore base pointer
+   405 0000014A 5D                          pop bp
+   406                                      ; call score increment routine
+   407 0000014B E88CFF                      call increment_score
+   408                                      ; return and discard 2 bytes from stack
+   409 0000014E C20200                      ret 2
+   410                                  
+   411                                  ; -------------------------------
+   412                                  ; prints/initializes the screen and static elements (paddle)
+   413                                  ; -------------------------------
+   414                                  printscreen:
+   415                                      ; push all general-purpose registers onto the stack (save context)
+   416 00000151 60                          pusha
+   417                                      
+   418                                      ; load the segment address of the video ram (text mode)
+   419 00000152 B800B8                      mov ax, 0xb800
+   420                                      ; set es (extra segment) register to video ram segment
+   421 00000155 8EC0                        mov es, ax
+   422                                      ; set di (destination index) to 0 (start of video memory)
+   423 00000157 BF0000                      mov di, 0
+   424                                      
+   425                                      ; clear screen
+   426                                      ; load ascii space character into al
+   427 0000015A B020                        mov al, ' '
+   428                                      ; load attribute byte 0x00 (black on black) into ah
+   429 0000015C B400                        mov ah, 0x00
+   430                                      ; clear the direction flag (df), causing string operations to increment di (forward)
+   431 0000015E FC                          cld
+   432                                      ; set cx (loop counter) to 2000 (80 columns * 25 rows = 2000 character/attribute pairs)
+   433 0000015F B9D007                      mov cx, 2000
+   434                                      ; repeat (cx times) store word (al=char, ah=attrib) at [es:di] and increment di by 2
+   435 00000162 F3AB                        rep stosw
+   436                                      
+   437                                      ; draw bottom paddle at offset 3840 (the second to last row)
+   438                                      ; push the starting offset for the paddle onto the stack
+   439 00000164 68000F                      push word 3840
+   440                                      ; call the routine to draw the paddle
+   441 00000167 E80200                      call draw_paddle
+   442                                      
+   443                                      ; restore all general-purpose registers from the stack
+   444 0000016A 61                          popa
+   445                                      ; return from the procedure
+   446 0000016B C3                          ret
+   447                                  
+   448                                  ; draw paddle: 20 dots starting at [bp+4] (the address pushed before the call)
+   449                                  draw_paddle:
+   450                                      ; save the current bp
+   451 0000016C 55                          push bp
+   452                                      ; set bp to sp (establish stack frame)
+   453 0000016D 89E5                        mov bp, sp
+   454                                      ; save all general-purpose registers
+   455 0000016F 60                          pusha
+   456                                      
+   457                                      ; load video ram segment address
+   458 00000170 B800B8                      mov ax, 0xb800
+   459                                      ; set es to video ram segment
+   460 00000173 8EC0                        mov es, ax
+   461                                      
+   462                                      ; get the starting video memory offset for the paddle from the stack
+   463 00000175 8B7E04                      mov di, [bp+4]
+   464                                      ; set cx (loop counter) to 20 (paddle width in characters)
+   465 00000178 B91400                      mov cx, 20
+   466                                      
+   467                                  ; draw loop
+   468                                  lp:
+   469                                      ; load the word 0x772e ('.' character with light gray on cyan color)
+   470 0000017B B82E77                      mov ax, 0x772E
+   471                                      ; store the word (character/attribute) at the current video memory location
+   472 0000017E 268905                      mov [es:di], ax
+   473                                      ; increment di by 2 (move to the next character/attribute pair)
+   474 00000181 83C702                      add di, 2
+   475                                      ; decrement cx and jump back to lp if cx is not zero
+   476 00000184 E2F5                        loop lp
+   477                                      
+   478                                      ; restore general-purpose registers
+   479 00000186 61                          popa
+   480                                      ; restore bp
+   481 00000187 5D                          pop bp
+   482                                      ; return from the procedure and discard 2 bytes (the pushed address) from the stack
+   483 00000188 C20200                      ret 2
+   484                                  
+   485                                  ; -------------------------------
+   486                                  ; draws the ball at the specified location and updates ball_loc
+   487                                  ; -------------------------------
+   488                                  print_ball:
+   489                                      ; save the current bp
+   490 0000018B 55                          push bp
+   491                                      ; set bp to sp (establish stack frame)
+   492 0000018C 89E5                        mov bp, sp
+   493                                      ; save all general-purpose registers
+   494 0000018E 60                          pusha
+   495                                      
+   496                                      ; load video ram segment address
+   497 0000018F B800B8                      mov ax, 0xb800
+   498                                      ; set es to video ram segment
+   499 00000192 8EC0                        mov es, ax
+   500                                      ; load attribute byte 0x07 (light gray on black) into ah (for ball and erase)
+   501 00000194 B407                        mov ah, 0x07
+   502                                      
+   503                                      ; erase old ball
+   504                                      ; load ascii space character into al
+   505 00000196 B020                        mov al, ' '
+   506                                      ; load the video offset of the ball's previous position
+   507 00000198 8B3E[0800]                  mov di, [ball_loc]
+   508                                      ; erase the old ball position by writing a space character with ah's attribute
+   509 0000019C 268905                      mov [es:di], ax
+   510                                      
+   511                                      ; draw new ball
+   512                                      ; load ascii asterisk character into al
+   513 0000019F B02A                        mov al, '*'
+   514                                      ; get the new ball offset from the stack
+   515 000001A1 8B7E04                      mov di, [bp+4]
+   516                                      ; draw the new ball
+   517 000001A4 268905                      mov [es:di], ax
+   518                                      ; save the new ball offset to the ball_loc variable
+   519 000001A7 893E[0800]                  mov [ball_loc], di
+   520                                      
+   521                                      ; restore general-purpose registers
+   522 000001AB 61                          popa
+   523                                      ; restore bp
+   524 000001AC 5D                          pop bp
+   525                                      ; return and discard 2 bytes from the stack
+   526 000001AD C20200                      ret 2
+   527                                  
+   528                                  ; -------------------------------
+   529                                  ; a simple time delay loop
+   530                                  ; -------------------------------
+   531                                  delay:
+   532                                      ; save cx
+   533 000001B0 51                          push cx
+   534                                      ; load cx with a large value
+   535 000001B1 B9FF0F                      mov cx, 0xfff
+   536                                      
+   537                                  .delay_d:
+   538                                      ; no operation (wastes time)
+   539 000001B4 90                          nop
+   540                                      ; no operation (wastes time)
+   541 000001B5 90                          nop
+   542                                      ; decrement cx and loop if not zero
+   543 000001B6 E2FC                        loop .delay_d
+   544                                      
+   545                                      ; load cx with an even larger value
+   546 000001B8 B9FFFF                      mov cx, 0xffff
+   547                                      
+   548                                  .delay_dd:
+   549                                      ; no operation
+   550 000001BB 90                          nop
+   551                                      ; decrement cx and loop if not zero
+   552 000001BC E2FD                        loop .delay_dd
+   553                                      
+   554                                      ; restore cx
+   555 000001BE 59                          pop cx
+   556                                      ; return
+   557 000001BF C3                          ret
+   558                                  
+   559                                  ; -------------------------------
+   560                                  ; move ball down (corrected with brick collision)
+   561                                  ; controls the ball's downward movement until a bounce or miss
+   562                                  ; -------------------------------
+   563                                  move_ball_down:
+   564                                      ; save current base pointer
+   565 000001C0 55                          push bp
+   566                                      ; set bp to sp (establish stack frame)
+   567 000001C1 89E5                        mov bp, sp
+   568                                      ; push all general-purpose registers onto the stack
+   569 000001C3 60                          pusha
+   570                                      
+   571                                      ; load video memory segment
+   572 000001C4 B800B8                      mov ax, 0xb800
+   573                                      ; set es to video memory
+   574 000001C7 8EC0                        mov es, ax
+   575                                      ; load attribute byte for ball
+   576 000001C9 B407                        mov ah, 0x07
+   577                                      ; get ball position from stack
+   578 000001CB 8B7E04                      mov di, [bp+4]
+   579                                      
+   580                                  .move_down_l1:
+   581                                      ; call delay routine
+   582 000001CE E8DFFF                      call delay
+   583                                      ; call delay routine again
+   584 000001D1 E8DCFF                      call delay
+   585                                      
+   586                                      ; --- erase old ball ---
+   587                                      ; load space character
+   588 000001D4 B020                        mov al, ' '
+   589                                      ; get current ball location
+   590 000001D6 8B1E[0800]                  mov bx, [ball_loc]
+   591                                      ; erase ball at old position
+   592 000001DA 268907                      mov [es:bx], ax
+   593                                      
+   594                                      ; --- calculate new position ---
+   595                                      ; check if moving straight down
+   596 000001DD 833E[1400]01                cmp word [straight_down], 1
+   597                                      ; if yes, move straight
+   598 000001E2 7406                        je .move_down_straight
+   599                                      ; move diagonally down-right (160 + 2)
+   600 000001E4 81C7A200                    add di, 162
+   601                                      ; check for brick collision
+   602 000001E8 EB04                        jmp .move_down_check_brick
+   603                                      
+   604                                  .move_down_straight:
+   605                                      ; move straight down (next row)
+   606 000001EA 81C7A000                    add di, 160
+   607                                      
+   608                                  .move_down_check_brick:
+   609                                      ; new: check if next position has a brick
+   610                                      ; push position to check
+   611 000001EE 57                          push di
+   612                                      ; call brick detection routine
+   613 000001EF E8F3FE                      call is_brick
+   614                                      ; if no brick, continue
+   615 000001F2 750C                        jne .move_down_no_brick_hit
+   616                                      
+   617                                      ; brick found! erase entire brick and bounce
+   618                                      ; push position to erase
+   619 000001F4 57                          push di
+   620                                      ; call brick erasing routine
+   621 000001F5 E800FF                      call erase_brick
+   622                                      
+   623                                      ; bounce back diagonally - switch to opposite diagonal
+   624                                      ; set down direction change flag
+   625 000001F8 C706[0A00]0100              mov word [change_down_direction], 1
+   626                                      ; switch to opposite diagonal
+   627 000001FE EB6A                        jmp move_down_sw
+   628                                      
+   629                                  .move_down_no_brick_hit:
+   630                                      ; --- draw new ball ---
+   631                                      ; load ball character
+   632 00000200 B02A                        mov al, '*'
+   633                                      ; draw ball at new position
+   634 00000202 268905                      mov [es:di], ax
+   635                                      ; update ball location
+   636 00000205 893E[0800]                  mov [ball_loc], di
+   637                                      
+   638                                      ; --- check wall/paddle collisions ---
+   639                                      ; push position to check
+   640 00000209 57                          push di
+   641                                      ; check right wall collision
+   642 0000020A E8C701                      call check_right_collision
+   643                                      ; check if direction changed
+   644 0000020D 833E[0A00]01                cmp word [change_down_direction], 1
+   645                                      ; if yes, switch diagonal
+   646 00000212 7456                        je move_down_sw
+   647                                      
+   648                                      ; push position to check
+   649 00000214 57                          push di
+   650                                      ; check if ball hit paddle
+   651 00000215 E89601                      call check_player_hit
+   652                                      ; check paddle hit flag
+   653 00000218 833E[1200]01                cmp word [check_hit], 1
+   654                                      ; if no hit, continue checking
+   655 0000021D 7515                        jne .move_down_no_paddle_hit
+   656                                      
+   657                                      ; paddle hit! reset movement flags
+   658                                      ; clear straight down flag
+   659 0000021F C706[1400]0000              mov word [straight_down], 0
+   660                                      ; clear up direction change
+   661 00000225 C706[0C00]0000              mov word [change_up_direction], 0
+   662                                      ; clear down direction change
+   663 0000022B C706[0A00]0000              mov word [change_down_direction], 0
+   664                                      ; move ball upward
+   665 00000231 E9B900                      jmp move_down_done
+   666                                      
+   667                                  .move_down_no_paddle_hit:
+   668                                      ; check if left key pressed
+   669 00000234 833E[0E00]01                cmp word [left], 1
+   670                                      ; if not, check right
+   671 00000239 7505                        jne .move_down_r
+   672                                      ; push paddle width
+   673 0000023B 6A18                        push word 24
+   674                                      ; slide paddle left
+   675 0000023D E8BE01                      call slide_left
+   676                                      
+   677                                  .move_down_r:
+   678                                      ; check if right key pressed
+   679 00000240 833E[1000]01                cmp word [right], 1
+   680                                      ; if not, continue
+   681 00000245 7505                        jne .move_down_n
+   682                                      ; push paddle width
+   683 00000247 6A18                        push word 24
+   684                                      ; slide paddle right
+   685 00000249 E8FB01                      call slide_right
+   686                                      
+   687                                  .move_down_n:
+   688                                      ; check if ball reached bottom row (paddle row)
+   689 0000024C 81FF000F                    cmp di, 3840
+   690                                      ; if not, continue moving down
+   691 00000250 0F8C7AFF                    jl .move_down_l1
+   692                                      
+   693                                      ; ball missed paddle - decrement lives
+   694                                      ; call lives decrement routine
+   695 00000254 E849FE                      call decrement_lives
+   696                                      ; if lives = 0, game over
+   697 00000257 0F8454FE                    jz game_over
+   698                                      
+   699                                      ; reset ball position above paddle
+   700                                      ; push reset position
+   701 0000025B 68880E                      push word 3720
+   702                                      ; draw ball at reset position
+   703 0000025E E82AFF                      call print_ball
+   704                                      ; clear straight down flag
+   705 00000261 C706[1400]0000              mov word [straight_down], 0
+   706                                      ; finish downward movement
+   707 00000267 E98300                      jmp move_down_done
+   708                                      
+   709                                  move_down_sw:
+   710                                      ; call delay routine
+   711 0000026A E843FF                      call delay
+   712                                      ; call delay routine again
+   713 0000026D E840FF                      call delay
+   714                                      
+   715                                      ; erase old ball
+   716                                      ; load space character
+   717 00000270 B020                        mov al, ' '
+   718                                      ; get current ball location
+   719 00000272 8B1E[0800]                  mov bx, [ball_loc]
+   720                                      ; erase ball at old position
+   721 00000276 268907                      mov [es:bx], ax
+   722                                      
+   723                                      ; move in opposite diagonal direction
+   724                                      ; check if moving straight down
+   725 00000279 833E[1400]01                cmp word [straight_down], 1
+   726                                      ; if yes, move straight
+   727 0000027E 7406                        je .move_down_straight2
+   728                                      ; move diagonally down-left (160 - 2)
+   729 00000280 81C79E00                    add di, 158
+   730                                      ; check for brick collision
+   731 00000284 EB04                        jmp .move_down_check_brick2
+   732                                      
+   733                                  .move_down_straight2:
+   734                                      ; move straight down (next row)
+   735 00000286 81C7A000                    add di, 160
+   736                                      
+   737                                  .move_down_check_brick2:
+   738                                      ; new: check for brick in opposite diagonal direction
+   739                                      ; push position to check
+   740 0000028A 57                          push di
+   741                                      ; call brick detection routine
+   742 0000028B E857FE                      call is_brick
+   743                                      ; if no brick, continue
+   744 0000028E 7504                        jne .move_down_no_brick_sw
+   745                                      
+   746                                      ; brick found! erase entire brick and continue in this diagonal
+   747                                      ; push position to erase
+   748 00000290 57                          push di
+   749                                      ; call brick erasing routine
+   750 00000291 E864FE                      call erase_brick
+   751                                      
+   752                                  .move_down_no_brick_sw:
+   753                                      ; draw ball at new position
+   754                                      ; load ball character
+   755 00000294 B02A                        mov al, '*'
+   756                                      ; draw ball
+   757 00000296 268905                      mov [es:di], ax
+   758                                      ; update ball location
+   759 00000299 893E[0800]                  mov [ball_loc], di
+   760                                      
+   761                                      ; check if paddle hit
+   762                                      ; push position to check
+   763 0000029D 57                          push di
+   764                                      ; check paddle collision
+   765 0000029E E80D01                      call check_player_hit
+   766                                      ; check paddle hit flag
+   767 000002A1 833E[1200]01                cmp word [check_hit], 1
+   768                                      ; if no hit, continue
+   769 000002A6 7514                        jne .move_down_no_paddle_sw_hit
+   770                                      
+   771                                      ; paddle hit! reset movement flags
+   772                                      ; clear straight down flag
+   773 000002A8 C706[1400]0000              mov word [straight_down], 0
+   774                                      ; clear up direction change
+   775 000002AE C706[0C00]0000              mov word [change_up_direction], 0
+   776                                      ; clear down direction change
+   777 000002B4 C706[0A00]0000              mov word [change_down_direction], 0
+   778                                      ; move ball upward
+   779 000002BA EB31                        jmp move_down_done
+   780                                      
+   781                                  .move_down_no_paddle_sw_hit:
+   782                                      ; check if left key pressed
+   783 000002BC 833E[0E00]01                cmp word [left], 1
+   784                                      ; if not, check right
+   785 000002C1 7505                        jne .move_down_r1
+   786                                      ; push paddle width
+   787 000002C3 6A18                        push word 24
+   788                                      ; slide paddle left
+   789 000002C5 E83601                      call slide_left
+   790                                      
+   791                                  .move_down_r1:
+   792                                      ; check if right key pressed
+   793 000002C8 833E[1000]01                cmp word [right], 1
+   794                                      ; if not, continue
+   795 000002CD 7505                        jne .move_down_n1
+   796                                      ; push paddle width
+   797 000002CF 6A18                        push word 24
+   798                                      ; slide paddle right
+   799 000002D1 E87301                      call slide_right
+   800                                      
+   801                                  .move_down_n1:
+   802                                      ; check if ball reached bottom row
+   803 000002D4 81FF000F                    cmp di, 3840
+   804                                      ; if not, continue in opposite diagonal
+   805 000002D8 7C90                        jl move_down_sw
+   806                                      
+   807                                      ; ball missed paddle - decrement lives
+   808                                      ; call lives decrement routine
+   809 000002DA E8C3FD                      call decrement_lives
+   810                                      ; if lives = 0, game over
+   811 000002DD 0F84CEFD                    jz game_over
+   812                                      
+   813                                      ; reset ball position
+   814                                      ; push reset position
+   815 000002E1 680401                      push word 260
+   816                                      ; draw ball at reset position
+   817 000002E4 E8A4FE                      call print_ball
+   818                                      ; clear straight down flag
+   819 000002E7 C706[1400]0000              mov word [straight_down], 0
+   820                                      
+   821                                  move_down_done:
+   822                                      ; restore all general-purpose registers
+   823 000002ED 61                          popa
+   824                                      ; restore base pointer
+   825 000002EE 5D                          pop bp
+   826                                      ; push current position for upward movement
+   827 000002EF 57                          push di
+   828                                      ; start moving ball upward
+   829 000002F0 E80300                      call move_ball_up
+   830                                      ; return and discard 2 bytes from stack
+   831 000002F3 C20200                      ret 2
+   832                                  
+   833                                  ; -------------------------------
+   834                                  ; move ball up (corrected with brick collision)
+   835                                  ; controls the ball's upward movement until a bounce (top or wall)
+   836                                  ; -------------------------------
+   837                                  move_ball_up:
+   838                                      ; save current base pointer
+   839 000002F6 55                          push bp
+   840                                      ; set bp to sp (establish stack frame)
+   841 000002F7 89E5                        mov bp, sp
+   842                                      ; push all general-purpose registers onto the stack
+   843 000002F9 60                          pusha
+   844                                      
+   845                                      ; load video memory segment
+   846 000002FA B800B8                      mov ax, 0xb800
+   847                                      ; set es to video memory
+   848 000002FD 8EC0                        mov es, ax
+   849                                      ; load attribute byte for ball
+   850 000002FF B407                        mov ah, 0x07
+   851                                      ; get ball position from stack
+   852 00000301 8B7E04                      mov di, [bp+4]
+   853                                      
+   854                                  .move_up_l1:
+   855                                      ; call delay routine
+   856 00000304 E8A9FE                      call delay
+   857                                      ; call delay routine again
+   858 00000307 E8A6FE                      call delay
+   859                                      
+   860                                      ; erase old ball
+   861                                      ; load space character
+   862 0000030A B020                        mov al, ' '
+   863                                      ; get current ball location
+   864 0000030C 8B1E[0800]                  mov bx, [ball_loc]
+   865                                      ; erase ball at old position
+   866 00000310 268907                      mov [es:bx], ax
+   867                                      
+   868                                      ; check for collisions before moving
+   869                                      ; push position to check
+   870 00000313 57                          push di
+   871                                      ; check right wall collision
+   872 00000314 E8BD00                      call check_right_collision
+   873                                      ; check if direction changed
+   874 00000317 833E[0C00]01                cmp word [change_up_direction], 1
+   875                                      ; if yes, switch diagonal
+   876 0000031C 7445                        je move_up_switch
+   877                                      
+   878                                      ; check if ball reached top row
+   879 0000031E 81FFA000                    cmp di, 160
+   880                                      ; if yes, bounce down
+   881 00000322 7E37                        jle move_up_bounce_down
+   882                                      
+   883                                      ; move diagonally up-right (160 - 2)
+   884 00000324 81EF9E00                    sub di, 158
+   885                                      
+   886                                      ; new: check if next position has a brick
+   887                                      ; push position to check
+   888 00000328 57                          push di
+   889                                      ; call brick detection routine
+   890 00000329 E8B9FD                      call is_brick
+   891                                      ; if no brick, continue
+   892 0000032C 7506                        jne .move_up_no_brick_up
+   893                                      
+   894                                      ; brick found! erase entire brick and bounce down diagonally
+   895                                      ; push position to erase
+   896 0000032E 57                          push di
+   897                                      ; call brick erasing routine
+   898 0000032F E8C6FD                      call erase_brick
+   899                                      
+   900                                      ; bounce back down
+   901                                      ; bounce down after hitting brick
+   902 00000332 EB27                        jmp move_up_bounce_down
+   903                                      
+   904                                  .move_up_no_brick_up:
+   905                                      ; draw ball at new position
+   906                                      ; load ball character
+   907 00000334 B02A                        mov al, '*'
+   908                                      ; draw ball
+   909 00000336 268905                      mov [es:di], ax
+   910                                      ; update ball location
+   911 00000339 893E[0800]                  mov [ball_loc], di
+   912                                      
+   913                                      ; check paddle movement keys
+   914                                      ; check if left key pressed
+   915 0000033D 833E[0E00]01                cmp word [left], 1
+   916                                      ; if not, check right
+   917 00000342 7505                        jne .move_up_r
+   918                                      ; push paddle width
+   919 00000344 6A18                        push word 24
+   920                                      ; slide paddle left
+   921 00000346 E8B500                      call slide_left
+   922                                      
+   923                                  .move_up_r:
+   924                                      ; check if right key pressed
+   925 00000349 833E[1000]01                cmp word [right], 1
+   926                                      ; if not, continue
+   927 0000034E 7505                        jne .move_up_n
+   928                                      ; push paddle width
+   929 00000350 6A18                        push word 24
+   930                                      ; slide paddle right
+   931 00000352 E8F200                      call slide_right
+   932                                      
+   933                                  .move_up_n:
+   934                                      ; check if ball still above top row
+   935 00000355 81FFA000                    cmp di, 160
+   936                                      ; if yes, continue moving up
+   937 00000359 7FA9                        jg .move_up_l1
+   938                                      
+   939                                  move_up_bounce_down:
+   940                                      ; clear straight down flag
+   941 0000035B C706[1400]0000              mov word [straight_down], 0
+   942                                      ; finish upward movement
+   943 00000361 EB40                        jmp move_up_done
+   944                                      
+   945                                  move_up_switch:
+   946                                      ; erase old ball
+   947                                      ; load space character
+   948 00000363 B020                        mov al, ' '
+   949                                      ; get current ball location
+   950 00000365 8B1E[0800]                  mov bx, [ball_loc]
+   951                                      ; erase ball at old position
+   952 00000369 268907                      mov [es:bx], ax
+   953                                      
+   954                                      ; move in opposite diagonal (up-left: 160 + 2)
+   955 0000036C 81EFA200                    sub di, 162
+   956                                      
+   957                                      ; new: check for brick in opposite diagonal direction
+   958                                      ; push position to check
+   959 00000370 57                          push di
+   960                                      ; call brick detection routine
+   961 00000371 E871FD                      call is_brick
+   962                                      ; if no brick, continue
+   963 00000374 7506                        jne .move_up_no_brick_sw
+   964                                      
+   965                                      ; brick found! erase entire brick and bounce down
+   966                                      ; push position to erase
+   967 00000376 57                          push di
+   968                                      ; call brick erasing routine
+   969 00000377 E87EFD                      call erase_brick
+   970                                      ; bounce down after hitting brick
+   971 0000037A EBDF                        jmp move_up_bounce_down
+   972                                      
+   973                                  .move_up_no_brick_sw:
+   974                                      ; draw ball at new position
+   975                                      ; load ball character
+   976 0000037C B02A                        mov al, '*'
+   977                                      ; draw ball
+   978 0000037E 268905                      mov [es:di], ax
+   979                                      ; update ball location
+   980 00000381 893E[0800]                  mov [ball_loc], di
+   981                                      
+   982                                      ; check paddle movement keys
+   983                                      ; check if left key pressed
+   984 00000385 833E[0E00]01                cmp word [left], 1
+   985                                      ; if not, check right
+   986 0000038A 7505                        jne move_up_r1
+   987                                      ; push paddle width
+   988 0000038C 6A18                        push word 24
+   989                                      ; slide paddle left
+   990 0000038E E86D00                      call slide_left
+   991                                      
+   992                                  move_up_r1:
+   993                                      ; check if right key pressed
+   994 00000391 833E[1000]01                cmp word [right], 1
+   995                                      ; if not, continue
+   996 00000396 7505                        jne move_up_n1
+   997                                      ; push paddle width
+   998 00000398 6A18                        push word 24
+   999                                      ; slide paddle right
+  1000 0000039A E8AA00                      call slide_right
+  1001                                      
+  1002                                  move_up_n1:
+  1003                                      ; check if ball still above top row
+  1004 0000039D 81FFA000                    cmp di, 160
+  1005                                      ; if yes, continue in opposite diagonal
+  1006 000003A1 7FC0                        jg move_up_switch
+  1007                                      
+  1008                                  move_up_done:
+  1009                                      ; clear up direction change flag
+  1010 000003A3 C706[0C00]0000              mov word [change_up_direction], 0
+  1011                                      ; restore all general-purpose registers
+  1012 000003A9 61                          popa
+  1013                                      ; restore base pointer
+  1014 000003AA 5D                          pop bp
+  1015                                      ; return and discard 2 bytes from stack
+  1016 000003AB C20200                      ret 2
+  1017                                  
+  1018                                  ; -------------------------------
+  1019                                  ; checks if the ball will hit the paddle in the next down step
+  1020                                  ; -------------------------------
+  1021                                  check_player_hit:
+  1022                                      ; save current base pointer
+  1023 000003AE 55                          push bp
+  1024                                      ; set bp to sp (establish stack frame)
+  1025 000003AF 89E5                        mov bp, sp
+  1026                                      ; push all general-purpose registers onto the stack
+  1027 000003B1 60                          pusha
+  1028                                      
+  1029                                      ; get ball position from stack
+  1030 000003B2 8B7E04                      mov di, [bp+4]
+  1031                                      ; calculate position one row below
+  1032 000003B5 81C7A000                    add di, 160
+  1033                                      ; get character/attribute at that position
+  1034 000003B9 268B05                      mov ax, [es:di]
+  1035                                      ; check if attribute is paddle color (0x77)
+  1036 000003BC 80FC77                      cmp ah, 0x77
+  1037                                      ; if not paddle, ball missed
+  1038 000003BF 7508                        jne .check_player_miss
+  1039                                      
+  1040                                      ; paddle hit detected
+  1041                                      ; set hit flag to 1
+  1042 000003C1 C706[1200]0100              mov word [check_hit], 1
+  1043                                      ; finish check
+  1044 000003C7 EB06                        jmp .check_player_done
+  1045                                      
+  1046                                  .check_player_miss:
+  1047                                      ; no paddle hit
+  1048                                      ; set hit flag to 0
+  1049 000003C9 C706[1200]0000              mov word [check_hit], 0
+  1050                                      
+  1051                                  .check_player_done:
+  1052                                      ; restore all general-purpose registers
+  1053 000003CF 61                          popa
+  1054                                      ; restore base pointer
+  1055 000003D0 5D                          pop bp
+  1056                                      ; return and discard 2 bytes from stack
+  1057 000003D1 C20200                      ret 2
+  1058                                  
+  1059                                  ; -------------------------------
+  1060                                  ; checks if the ball is at the right edge of the screen
+  1061                                  ; -------------------------------
+  1062                                  check_right_collision:
+  1063                                      ; save current base pointer
+  1064 000003D4 55                          push bp
+  1065                                      ; set bp to sp (establish stack frame)
+  1066 000003D5 89E5                        mov bp, sp
+  1067                                      ; push all general-purpose registers onto the stack
+  1068 000003D7 60                          pusha
+  1069                                      
+  1070                                      ; get ball position from stack
+  1071 000003D8 8B7E04                      mov di, [bp+4]
+  1072                                      ; start from bottom right corner (row 24, col 79)
+  1073 000003DB BB9E0F                      mov bx, 3998
+  1074                                      ; check 23 rows
+  1075 000003DE B91700                      mov cx, 23
+  1076                                      
+  1077                                  .check_right_l1:
+  1078                                      ; check if ball is at right edge of this row
+  1079 000003E1 39DF                        cmp di, bx
+  1080                                      ; if not, check next row
+  1081 000003E3 750E                        jne .check_right_next
+  1082                                      
+  1083                                      ; collision detected! set both direction flags
+  1084                                      ; set up direction change flag
+  1085 000003E5 C706[0C00]0100              mov word [change_up_direction], 1
+  1086                                      ; set down direction change flag
+  1087 000003EB C706[0A00]0100              mov word [change_down_direction], 1
+  1088                                      ; finish check
+  1089 000003F1 EB06                        jmp .check_right_done
+  1090                                      
+  1091                                  .check_right_next:
+  1092                                      ; move to previous row's right edge
+  1093 000003F3 81EBA000                    sub bx, 160
+  1094                                      ; decrement row counter and loop
+  1095 000003F7 E2E8                        loop .check_right_l1
+  1096                                      
+  1097                                  .check_right_done:
+  1098                                      ; restore all general-purpose registers
+  1099 000003F9 61                          popa
+  1100                                      ; restore base pointer
+  1101 000003FA 5D                          pop bp
+  1102                                      ; return and discard 2 bytes from stack
+  1103 000003FB C20200                      ret 2
+  1104                                  
+  1105                                  ; -------------------------------
+  1106                                  ; slides the paddle one position to the left
+  1107                                  ; -------------------------------
+  1108                                  slide_left:
+  1109                                      ; save current base pointer
+  1110 000003FE 55                          push bp
+  1111                                      ; set bp to sp (establish stack frame)
+  1112 000003FF 89E5                        mov bp, sp
+  1113                                      ; push all general-purpose registers onto the stack
+  1114 00000401 60                          pusha
+  1115                                      
+  1116                                      ; load video memory segment
+  1117 00000402 B800B8                      mov ax, 0xb800
+  1118                                      ; set es to video memory
+  1119 00000405 8EC0                        mov es, ax
+  1120                                      ; load paddle character into ah
+  1121 00000407 B42E                        mov ah, '.'
+  1122                                      ; get starting position from stack
+  1123 00000409 8B7E04                      mov di, [bp+4]
+  1124                                      ; check 80 positions (full row width)
+  1125 0000040C B95000                      mov cx, 80
+  1126                                      
+  1127                                      ; check if di is 0 (uninitialized)
+  1128 0000040F 83FF00                      cmp di, 0
+  1129                                      ; if yes, start from paddle row
+  1130 00000412 7403                        je slide_left_p_left
+  1131                                      ; set to start of paddle row
+  1132 00000414 BF000F                      mov di, 3840
+  1133                                      
+  1134                                  slide_left_p_left:
+  1135                                      ; get character/attribute at current position
+  1136 00000417 268B05                      mov ax, [es:di]
+  1137                                      ; check if attribute is paddle color (0x77)
+  1138 0000041A 80FC77                      cmp ah, 0x77
+  1139                                      ; if not paddle, check next position
+  1140 0000041D 7518                        jne slide_left_next_left
+  1141                                      
+  1142                                      ; check if paddle is at leftmost position
+  1143 0000041F 81FF000F                    cmp di, 3840
+  1144                                      ; if yes, can't move left
+  1145 00000423 7417                        je slide_left_done_left
+  1146                                      
+  1147                                      ; move paddle one position left
+  1148                                      ; move to left position
+  1149 00000425 83EF02                      sub di, 2
+  1150                                      ; set paddle attribute
+  1151 00000428 B477                        mov ah, 0x77
+  1152                                      ; draw paddle at new position
+  1153 0000042A 268905                      mov [es:di], ax
+  1154                                      
+  1155                                      ; erase rightmost paddle character
+  1156                                      ; move to right end of paddle
+  1157 0000042D 83C728                      add di, 40
+  1158                                      ; set erase attribute
+  1159 00000430 B400                        mov ah, 0x00
+  1160                                      ; erase character
+  1161 00000432 268905                      mov [es:di], ax
+  1162                                      ; finish sliding
+  1163 00000435 EB05                        jmp slide_left_done_left
+  1164                                      
+  1165                                  slide_left_next_left:
+  1166                                      ; move to next position to check
+  1167 00000437 83C702                      add di, 2
+  1168                                      ; decrement counter and loop
+  1169 0000043A E2DB                        loop slide_left_p_left
+  1170                                      
+  1171                                  slide_left_done_left:
+  1172                                      ; clear left key flag
+  1173 0000043C C706[0E00]0000              mov word [left], 0
+  1174                                      ; restore all general-purpose registers
+  1175 00000442 61                          popa
+  1176                                      ; restore base pointer
+  1177 00000443 5D                          pop bp
+  1178                                      ; return and discard 2 bytes from stack
+  1179 00000444 C20200                      ret 2
+  1180                                  
+  1181                                  ; -------------------------------
+  1182                                  ; slides the paddle one position to the right
+  1183                                  ; -------------------------------
+  1184                                  slide_right:
+  1185                                      ; save current base pointer
+  1186 00000447 55                          push bp
+  1187                                      ; set bp to sp (establish stack frame)
+  1188 00000448 89E5                        mov bp, sp
+  1189                                      ; push all general-purpose registers onto the stack
+  1190 0000044A 60                          pusha
+  1191                                      
+  1192                                      ; load video memory segment
+  1193 0000044B B800B8                      mov ax, 0xb800
+  1194                                      ; set es to video memory
+  1195 0000044E 8EC0                        mov es, ax
+  1196                                      ; load paddle character into ah
+  1197 00000450 B42E                        mov ah, '.'
+  1198                                      ; get starting position from stack
+  1199 00000452 8B7E04                      mov di, [bp+4]
+  1200                                      ; check 80 positions (full row width)
+  1201 00000455 B95000                      mov cx, 80
+  1202                                      
+  1203                                      ; check if di is 0 (uninitialized)
+  1204 00000458 83FF00                      cmp di, 0
+  1205                                      ; if yes, start from paddle row
+  1206 0000045B 7403                        je slide_right_p_right
+  1207                                      ; set to start of paddle row
+  1208 0000045D BF000F                      mov di, 3840
+  1209                                      
+  1210                                  slide_right_p_right:
+  1211                                      ; get character/attribute at current position
+  1212 00000460 268B05                      mov ax, [es:di]
+  1213                                      ; check if attribute is paddle color (0x77)
+  1214 00000463 80FC77                      cmp ah, 0x77
+  1215                                      ; if not paddle, check next position
+  1216 00000466 751A                        jne slide_right_next_right
+  1217                                      
+  1218                                      ; calculate rightmost paddle position
+  1219                                      ; copy di to bx
+  1220 00000468 89FB                        mov bx, di
+  1221                                      ; add paddle width (20 chars * 2 bytes)
+  1222 0000046A 83C328                      add bx, 40
+  1223                                      ; check if at right edge (col 79)
+  1224 0000046D 81FB9E0F                    cmp bx, 3998
+  1225                                      ; if yes, can't move right
+  1226 00000471 7F14                        jg slide_right_done_right
+  1227                                      
+  1228                                      ; erase leftmost paddle character
+  1229                                      ; set erase attribute
+  1230 00000473 B400                        mov ah, 0x00
+  1231                                      ; erase character
+  1232 00000475 268905                      mov [es:di], ax
+  1233                                      
+  1234                                      ; move paddle one position right
+  1235                                      ; move to right end of paddle
+  1236 00000478 83C728                      add di, 40
+  1237                                      ; set paddle attribute
+  1238 0000047B B477                        mov ah, 0x77
+  1239                                      ; draw paddle at new position
+  1240 0000047D 268905                      mov [es:di], ax
+  1241                                      ; finish sliding
+  1242 00000480 EB05                        jmp slide_right_done_right
+  1243                                      
+  1244                                  slide_right_next_right:
+  1245                                      ; move to next position to check
+  1246 00000482 83C702                      add di, 2
+  1247                                      ; decrement counter and loop
+  1248 00000485 E2D9                        loop slide_right_p_right
+  1249                                      
+  1250                                  slide_right_done_right:
+  1251                                      ; clear right key flag
+  1252 00000487 C706[1000]0000              mov word [right], 0
+  1253                                      ; restore all general-purpose registers
+  1254 0000048D 61                          popa
+  1255                                      ; restore base pointer
+  1256 0000048E 5D                          pop bp
+  1257                                      ; return and discard 2 bytes from stack
+  1258 0000048F C20200                      ret 2
+  1259                                  
+  1260                                  ; -------------------------------
+  1261                                  ; keyboard interrupt service routine (isr) for key input
+  1262                                  ; -------------------------------
+  1263                                  kbisr:
+  1264                                      ; save ax register
+  1265 00000492 50                          push ax
+  1266                                      ; save di register
+  1267 00000493 57                          push di
+  1268                                      
+  1269                                      ; read keyboard scan code from port 0x60
+  1270 00000494 E460                        in al, 0x60
+  1271                                      
+  1272                                      ; check if left arrow key pressed (scan code 0x4b)
+  1273 00000496 3C4B                        cmp al, 0x4B
+  1274                                      ; if not, check next key
+  1275 00000498 7508                        jne .kbisr_next
+  1276                                      ; set left movement flag
+  1277 0000049A C706[0E00]0100              mov word [left], 1
+  1278                                      ; exit isr
+  1279 000004A0 EB13                        jmp .kbisr_exit
+  1280                                      
+  1281                                  .kbisr_next:
+  1282                                      ; check if right arrow key pressed (scan code 0x4d)
+  1283 000004A2 3C4D                        cmp al, 0x4D
+  1284                                      ; if not, ignore key
+  1285 000004A4 7508                        jne .kbisr_ignore
+  1286                                      ; set right movement flag
+  1287 000004A6 C706[1000]0100              mov word [right], 1
+  1288                                      ; exit isr
+  1289 000004AC EB07                        jmp .kbisr_exit
+  1290                                      
+  1291                                  .kbisr_ignore:
+  1292                                      ; restore di register
+  1293 000004AE 5F                          pop di
+  1294                                      ; restore ax register
+  1295 000004AF 58                          pop ax
+  1296                                      ; chain to original keyboard isr
+  1297 000004B0 2EFF2E[0300]                jmp far [cs:oldisr]
+  1298                                      
+  1299                                  .kbisr_exit:
+  1300                                      ; send end of interrupt signal to pic
+  1301 000004B5 B020                        mov al, 0x20
+  1302                                      ; write to pic command port
+  1303 000004B7 E620                        out 0x20, al
+  1304                                      ; restore di register
+  1305 000004B9 5F                          pop di
+  1306                                      ; restore ax register
+  1307 000004BA 58                          pop ax
+  1308                                      ; return from interrupt
+  1309 000004BB CF                          iret
+  1310                                  
+  1311                                  ; draw 3 rows of 5-character bricks with 1-character spacing
+  1312                                  draw_bricks:
+  1313                                      ; save ax register
+  1314 000004BC 50                          push ax
+  1315                                      ; save bx register
+  1316 000004BD 53                          push bx
+  1317                                      ; save cx register
+  1318 000004BE 51                          push cx
+  1319                                      ; save dx register
+  1320 000004BF 52                          push dx
+  1321                                      ; save di register
+  1322 000004C0 57                          push di
+  1323                                      ; save es register
+  1324 000004C1 06                          push es
+  1325                                      
+  1326                                      ; load video memory segment
+  1327 000004C2 B800B8                      mov ax, 0xB800
+  1328                                      ; set es to video memory
+  1329 000004C5 8EC0                        mov es, ax
+  1330                                      
+  1331                                      ; load brick character (solid block)
+  1332 000004C7 B0DB                        mov al, 219
+  1333                                      ; save brick character in bl
+  1334 000004C9 88C3                        mov bl, al
+  1335                                      
+  1336                                      ; row 1 (top): attribute 0x0c (light red)
+  1337                                      ; start at row 0
+  1338 000004CB BF0000                      mov di, 0
+  1339                                      ; light red attribute
+  1340 000004CE B40C                        mov ah, 0x0C
+  1341                                      ; 13 bricks per row
+  1342 000004D0 B90D00                      mov cx, 13
+  1343                                      
+  1344                                  draw_bricks_row1_loop:
+  1345                                      ; 5 characters per brick
+  1346 000004D3 BE0500                      mov si, 5
+  1347                                      
+  1348                                  .draw_bricks_row1:
+  1349                                      ; write brick character
+  1350 000004D6 26881D                      mov [es:di], bl
+  1351                                      ; write brick attribute
+  1352 000004D9 26886501                    mov [es:di+1], ah
+  1353                                      ; move to next character
+  1354 000004DD 83C702                      add di, 2
+  1355                                      ; decrement brick character counter
+  1356 000004E0 4E                          dec si
+  1357                                      ; repeat until brick is complete
+  1358 000004E1 75F3                        jnz .draw_bricks_row1
+  1359                                      
+  1360                                      ; add spacing (1 character) between bricks
+  1361 000004E3 83C702                      add di, 2
+  1362                                      ; decrement brick counter and loop
+  1363 000004E6 E2EB                        loop draw_bricks_row1_loop
+  1364                                      
+  1365                                      ; row 2: attribute 0x0e (yellow)
+  1366                                      ; start at row 2 (160 * 2)
+  1367 000004E8 BF4001                      mov di, 160*2
+  1368                                      ; yellow attribute
+  1369 000004EB B40E                        mov ah, 0x0E
+  1370                                      ; 13 bricks per row
+  1371 000004ED B90D00                      mov cx, 13
+  1372                                      
+  1373                                  draw_bricks_row2_loop:
+  1374                                      ; 5 characters per brick
+  1375 000004F0 BE0500                      mov si, 5
+  1376                                      
+  1377                                  .draw_bricks_row2:
+  1378                                      ; write brick character
+  1379 000004F3 26881D                      mov [es:di], bl
+  1380                                      ; write brick attribute
+  1381 000004F6 26886501                    mov [es:di+1], ah
+  1382                                      ; move to next character
+  1383 000004FA 83C702                      add di, 2
+  1384                                      ; decrement brick character counter
+  1385 000004FD 4E                          dec si
+  1386                                      ; repeat until brick is complete
+  1387 000004FE 75F3                        jnz .draw_bricks_row2
+  1388                                      
+  1389                                      ; add spacing (1 character) between bricks
+  1390 00000500 83C702                      add di, 2
+  1391                                      ; decrement brick counter and loop
+  1392 00000503 E2EB                        loop draw_bricks_row2_loop
+  1393                                      
+  1394                                      ; row 3: attribute 0x0b (cyan)
+  1395                                      ; start at row 4 (160 * 4)
+  1396 00000505 BF8002                      mov di, 160*4
+  1397                                      ; cyan attribute
+  1398 00000508 B40B                        mov ah, 0x0B
+  1399                                      ; 13 bricks per row
+  1400 0000050A B90D00                      mov cx, 13
+  1401                                      
+  1402                                  draw_bricks_row3_loop:
+  1403                                      ; 5 characters per brick
+  1404 0000050D BE0500                      mov si, 5
+  1405                                      
+  1406                                  .draw_bricks_row3:
+  1407                                      ; write brick character
+  1408 00000510 26881D                      mov [es:di], bl
+  1409                                      ; write brick attribute
+  1410 00000513 26886501                    mov [es:di+1], ah
+  1411                                      ; move to next character
+  1412 00000517 83C702                      add di, 2
+  1413                                      ; decrement brick character counter
+  1414 0000051A 4E                          dec si
+  1415                                      ; repeat until brick is complete
+  1416 0000051B 75F3                        jnz .draw_bricks_row3
+  1417                                      
+  1418                                      ; add spacing (1 character) between bricks
+  1419 0000051D 83C702                      add di, 2
+  1420                                      ; decrement brick counter and loop
+  1421 00000520 E2EB                        loop draw_bricks_row3_loop
+  1422                                      
+  1423                                      ; restore es register
+  1424 00000522 07                          pop es
+  1425                                      ; restore di register
+  1426 00000523 5F                          pop di
+  1427                                      ; restore dx register
+  1428 00000524 5A                          pop dx
+  1429                                      ; restore cx register
+  1430 00000525 59                          pop cx
+  1431                                      ; restore bx register
+  1432 00000526 5B                          pop bx
+  1433                                      ; restore ax register
+  1434 00000527 58                          pop ax
+  1435                                      ; return from procedure
+  1436 00000528 C3                          ret
+  1437                                  
+  1438                                  ; -------------------------------
+  1439                                  ; program entry point
+  1440                                  ; -------------------------------
+  1441                                  start:
+  1442                                      ; zero out ax register
+  1443 00000529 31C0                        xor ax, ax
+  1444                                      ; set es to interrupt vector table segment
+  1445 0000052B 8EC0                        mov es, ax
+  1446                                      
+  1447                                      ; save original keyboard interrupt vector
+  1448                                      ; get low word of int 9 vector
+  1449 0000052D 26A12400                    mov ax, [es:9*4]
+  1450                                      ; save original offset
+  1451 00000531 A3[0300]                    mov [oldisr], ax
+  1452                                      ; get high word of int 9 vector
+  1453 00000534 26A12600                    mov ax, [es:9*4+2]
+  1454                                      ; save original segment
+  1455 00000538 A3[0500]                    mov [oldisr+2], ax
+  1456                                      
+  1457                                      ; install new keyboard interrupt handler
+  1458                                      ; disable interrupts during vector modification
+  1459 0000053B FA                          cli
+  1460                                      ; set new offset (our isr)
+  1461 0000053C 26C7062400[9204]            mov word [es:9*4], kbisr
+  1462                                      ; set new segment (current code segment)
+  1463 00000543 268C0E2600                  mov word [es:9*4+2], cs
+  1464                                      ; enable interrupts
+  1465 00000548 FB                          sti
+  1466                                      
+  1467                                      ; initialize game screen
+  1468                                      ; draw paddle and clear screen
+  1469 00000549 E805FC                      call printscreen
+  1470                                      ; draw brick rows
+  1471 0000054C E86DFF                      call draw_bricks
+  1472                                      
+  1473                                      ; display initial score and lives
+  1474                                      ; show score at top
+  1475 0000054F E8EAFA                      call display_score
+  1476                                      ; show lives at top
+  1477 00000552 E831FB                      call display_lives
+  1478                                      
+  1479                                      ; set initial ball position (above paddle center)
+  1480 00000555 C706[0800]BA0E              mov word [ball_loc], 3770
+  1481                                      
+  1482                                      ; wait for keypress to start game
+  1483                                      ; bios keyboard input function
+  1484 0000055B B400                        mov ah, 0
+  1485                                      ; call bios keyboard interrupt
+  1486 0000055D CD16                        int 0x16
+  1487                                      
+  1488                                  main_loop:
+  1489                                      ; move ball upward phase
+  1490                                      ; push current ball location
+  1491 0000055F FF36[0800]                  push word [ball_loc]
+  1492                                      ; call upward movement routine
+  1493 00000563 E890FD                      call move_ball_up
+  1494                                      
+  1495                                      ; move ball downward phase
+  1496                                      ; push current ball location
+  1497 00000566 FF36[0800]                  push word [ball_loc]
+  1498                                      ; call downward movement routine
+  1499 0000056A E853FC                      call move_ball_down
+  1500                                      
+  1501                                      ; repeat game loop indefinitely
+  1502 0000056D EBF0                        jmp main_loop
+  1503                                      
+  1504                                  quit:
+  1505                                      ; dos terminate program function
+  1506 0000056F B8004C                      mov ax, 0x4c00
+  1507                                      ; call dos interrupt
+  1508 00000572 CD21                        int 0x21
